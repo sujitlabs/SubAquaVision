@@ -8,8 +8,8 @@ APP_SUBTITLE = "Underwater Object Detection, ROV Streaming & Measurement System"
 APP_VERSION = "2.5.0"
 
 # AI Model Settings
-DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
-FALLBACK_GEMINI_MODEL = "gemini-1.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+FALLBACK_GEMINI_MODEL = "gemini-flash-latest"
 
 # Object Category Color Scheme (Hex & RGB)
 CATEGORY_CONFIG = {
