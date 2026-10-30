@@ -327,9 +327,9 @@ if "telemetry" not in st.session_state:
     st.session_state.telemetry = ROVTelemetry()
 if "local_yolo" not in st.session_state:
     try:
-        from local_yolo_detector import RealtimeYOLOTracker
-        st.session_state.local_yolo = RealtimeYOLOTracker(conf_threshold=0.25)
-    except Exception as e:
+        from local_yolo_detector import get_tracker
+        st.session_state.local_yolo = get_tracker(conf_threshold=0.25)
+    except Exception:
         st.session_state.local_yolo = None
 
 # Function to connect ROV
@@ -375,14 +375,19 @@ with st.sidebar:
         index=0,
         help="Local AI runs on-device at 30 FPS with continuous ByteTrack. Cloud AI runs multimodal taxonomy on captured frames."
     )
-    is_realtime_local = "Local Real-Time" in ai_engine_mode
+    local_mode_selected = "Local Real-Time" in ai_engine_mode
+    is_realtime_local = local_mode_selected and st.session_state.local_yolo is not None
 
-    if is_realtime_local:
+    if local_mode_selected and is_realtime_local:
         st.success("🟢 **Real-Time 30 FPS Mode Active!** Live video continuously tracks objects with ByteTrack IDs.")
         yolo_conf = st.slider("Local AI Confidence", min_value=0.10, max_value=0.90, value=0.25, step=0.05)
         if st.session_state.rov_stream is not None:
             st.session_state.rov_stream.set_realtime_yolo(True)
             st.session_state.rov_stream.set_confidence(yolo_conf)
+    elif local_mode_selected:
+        st.warning("⚠️ Local YOLOv8 is unavailable. Install dependencies with `pip install -r requirements.txt`, or select Cloud AI mode.")
+        if st.session_state.rov_stream is not None:
+            st.session_state.rov_stream.set_realtime_yolo(False)
     else:
         st.info("☁️ **Cloud Gemini Mode:** Uses Gemini 3.5 Flash for deep biological taxonomy on captured frames.")
         if st.session_state.rov_stream is not None:
@@ -495,6 +500,12 @@ with st.sidebar:
     with col_t2:
         show_meas = st.checkbox("Measurements", value=True)
         show_telemetry = st.checkbox("Subsea Telemetry HUD", value=True)
+
+    if st.session_state.local_yolo is not None:
+        st.session_state.local_yolo.set_fov(fov_deg)
+    if st.session_state.rov_stream is not None:
+        st.session_state.rov_stream.set_fov(fov_deg)
+        st.session_state.rov_stream.set_show_boxes(show_boxes)
     
     enable_tracking = st.checkbox("🔄 Multi-Object Tracking (MOT)", value=True, help="Assigns persistent IDs to prevent double-counting across video frames.")
 
@@ -965,7 +976,7 @@ with tabs[1]:
                 st.image(processed_img, caption="Underwater Enhanced Image", width='stretch')
                 col_ib1, col_ib2 = st.columns(2)
                 with col_ib1:
-                    if st.button("⚡ Run Local YOLOv8", type="primary", width='stretch', key="img_detect_yolo_btn"):
+                    if st.button("⚡ Run Local YOLOv8", type="primary", width='stretch', key="img_detect_yolo_btn", disabled=st.session_state.local_yolo is None):
                         with st.spinner("Executing Local YOLOv8 + ByteTrack..."):
                             arr_rgb = np.array(processed_img)
                             arr_bgr = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2BGR)

@@ -9,7 +9,13 @@ import cv2
 import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 import threading
-from ultralytics import YOLO
+
+try:
+    from ultralytics import YOLO
+    YOLO_IMPORT_ERROR = None
+except Exception as exc:
+    YOLO = None
+    YOLO_IMPORT_ERROR = exc
 
 # Category mappings for underwater and general maritime/inspection objects
 CATEGORY_MAP = {
@@ -57,6 +63,12 @@ class RealtimeYOLOTracker:
     persistent ID tracking, metric physical dimensions, and camera distance.
     """
     def __init__(self, model_path: Optional[str] = None, conf_threshold: float = 0.25, fov_deg: float = 75.0):
+        if YOLO is None:
+            raise RuntimeError(
+                "Local YOLOv8 is unavailable. Install dependencies with "
+                "`pip install -r requirements.txt`."
+            ) from YOLO_IMPORT_ERROR
+
         if model_path is None:
             base_dir = os.path.dirname(__file__)
             model_path = os.path.join(base_dir, "models", "yolov8n.pt")
@@ -65,6 +77,7 @@ class RealtimeYOLOTracker:
         self.conf_threshold = conf_threshold
         self.fov_deg = fov_deg
         self.lock = threading.Lock()
+        self.inference_lock = threading.Lock()
 
         # Load YOLO model
         self.model = YOLO(self.model_path)
@@ -82,7 +95,7 @@ class RealtimeYOLOTracker:
         with self.lock:
             self.fov_deg = max(30.0, min(150.0, fov))
 
-    def _detect_underwater_marine_blobs(self, frame_bgr: np.ndarray, existing_boxes: list) -> List[Dict[str, Any]]:
+    def _detect_underwater_marine_blobs(self, frame_bgr: np.ndarray, existing_boxes: list) -> List[Tuple[int, int, int, int, float, str]]:
         """
         Detects distinct marine fish / species swimming in water when YOLO
         general detector doesn't have custom marine classes trained.
@@ -138,17 +151,18 @@ class RealtimeYOLOTracker:
         f_px = (w / 2.0) / np.tan(apparent_half_fov)
 
         # Run ByteTrack tracking via Ultralytics (imgsz=320 for guaranteed 30 FPS)
-        try:
-            results = self.model.track(
-                frame_bgr,
-                persist=True,
-                tracker="bytetrack.yaml",
-                conf=self.conf_threshold,
-                imgsz=320,
-                verbose=False
-            )
-        except Exception:
-            results = self.model(frame_bgr, conf=self.conf_threshold, imgsz=320, verbose=False)
+        with self.inference_lock:
+            try:
+                results = self.model.track(
+                    frame_bgr,
+                    persist=True,
+                    tracker="bytetrack.yaml",
+                    conf=self.conf_threshold,
+                    imgsz=320,
+                    verbose=False
+                )
+            except Exception:
+                results = self.model(frame_bgr, conf=self.conf_threshold, imgsz=320, verbose=False)
 
         detections = []
         out_frame = frame_bgr.copy() if draw_hud else frame_bgr

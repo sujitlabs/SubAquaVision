@@ -16,9 +16,12 @@ import numpy as np
 from PIL import Image
 
 try:
-    from local_yolo_detector import RealtimeYOLOTracker
+    from local_yolo_detector import get_tracker
 except ImportError:
-    from .local_yolo_detector import RealtimeYOLOTracker
+    try:
+        from .local_yolo_detector import get_tracker
+    except ImportError:
+        get_tracker = None
 
 def get_available_usb_cameras(max_tested: int = 4) -> List[int]:
     """Detects active camera devices on Windows (testing MSMF default and DSHOW)."""
@@ -205,16 +208,15 @@ class ROVStream:
 
         # Local Real-Time AI Tracking Engine (YOLOv8 + ByteTrack)
         try:
-            self.yolo_tracker = RealtimeYOLOTracker(conf_threshold=conf_threshold, fov_deg=fov_deg)
-        except Exception as e:
-            print(f"YOLO tracker init error: {e}")
+            self.yolo_tracker = get_tracker(conf_threshold=conf_threshold, fov_deg=fov_deg) if get_tracker else None
+        except Exception:
             self.yolo_tracker = None
 
-        self.enable_realtime_yolo = True
+        self.enable_realtime_yolo = self.yolo_tracker is not None
         self.show_boxes = True
 
     def set_realtime_yolo(self, enabled: bool):
-        self.enable_realtime_yolo = enabled
+        self.enable_realtime_yolo = bool(enabled and self.yolo_tracker is not None)
 
     def set_show_boxes(self, show: bool):
         self.show_boxes = show
