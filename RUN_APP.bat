@@ -1,8 +1,8 @@
 @echo off
-title SubAquaVision - Underwater Object Detection
+title SubAquaVisionUltra - Real-Time YOLOv8 + ByteTrack 30 FPS HUD
 color 0B
 echo ================================================================
-echo               SubAquaVision Underwater AI System                
+echo             SubAquaVision ULTRA - 30 FPS Real-Time AI
 echo ================================================================
 echo.
 echo [*] Checking Python environment...
@@ -12,10 +12,10 @@ if exist %PY_EXE% (
 ) else (
     set TARGET_PY=python
 )
-echo [*] Starting Streamlit server...
-echo [*] The app will open in your default browser automatically.
+echo [*] Starting SubAquaVisionUltra Streamlit Server on Port 8503...
+echo [*] The app will open in your default browser at http://localhost:8503
 echo.
-%TARGET_PY% -m streamlit run app.py
+%TARGET_PY% -m streamlit run app.py --server.port 8503
 echo.
 echo Server stopped.
 pause

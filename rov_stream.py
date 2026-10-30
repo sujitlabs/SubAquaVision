@@ -1,7 +1,8 @@
 """
-Universal ROV Video Stream Manager.
+Universal ROV Video Stream Manager for SubAquaVision Ultra.
 Supports USB (UVC), Wi-Fi (RTSP, HTTP MJPEG, UDP), Phone Camera streams, and HTTP snapshots.
-Features threaded frame capture and background local MJPEG server for smooth 30 FPS browser viewing.
+Features threaded frame capture, Real-Time YOLOv8 + ByteTrack Live Tracking (30 FPS),
+and background local MJPEG server at port 8504 for smooth 30 FPS browser viewing.
 """
 
 import cv2
@@ -10,16 +11,20 @@ import time
 import urllib.request
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 from PIL import Image
+
+try:
+    from local_yolo_detector import RealtimeYOLOTracker
+except ImportError:
+    from .local_yolo_detector import RealtimeYOLOTracker
 
 def get_available_usb_cameras(max_tested: int = 4) -> List[int]:
     """Detects active camera devices on Windows (testing MSMF default and DSHOW)."""
     available = []
     for i in range(max_tested):
         try:
-            # Try default backend (MSMF works best with virtual and USB webcams on Win10/11)
             cap = cv2.VideoCapture(i)
             if not cap.isOpened():
                 cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
@@ -38,6 +43,7 @@ def find_adb_path() -> Optional[str]:
     import os
     import shutil
     candidates = [
+        r"C:\Program Files\ASUS\GlideX\adb.exe",
         r"C:\Program Files\DroidCam\Client\data\obs-plugins\droidcam-obs\adb\adb.exe",
         r"C:\Program Files (x86)\DroidCam\Client\data\obs-plugins\droidcam-obs\adb\adb.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"),
@@ -120,13 +126,14 @@ def fetch_phone_snapshot(url: str, timeout: float = 3.0) -> Optional[Image.Image
 class MJPEGStreamServer:
     """
     Lightweight background HTTP server that streams the active ROV stream as MJPEG
-    at http://localhost:8502/video_feed for smooth 30 FPS browser rendering.
+    at http://localhost:8504/video_feed for smooth 30 FPS browser rendering.
+    Uses port 8504 in SubAquaVisionUltra to eliminate any port conflicts.
     """
     server: Optional[HTTPServer] = None
     thread: Optional[threading.Thread] = None
     active_stream: Optional['ROVStream'] = None
     lock = threading.Lock()
-    port = 8502
+    port = 8504
 
     @classmethod
     def set_stream(cls, stream: Optional['ROVStream']):
@@ -151,7 +158,8 @@ class MJPEGStreamServer:
                         st = MJPEGStreamServer.active_stream
                         if not st or not st.is_running:
                             break
-                        rgb = st.get_latest_frame_rgb()
+                        # Stream the real-time annotated frame (with live HUD, boxes, and IDs)
+                        rgb = st.get_latest_frame_rgb(use_annotated=True)
                         if rgb is not None:
                             try:
                                 bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -159,7 +167,7 @@ class MJPEGStreamServer:
                                 self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
                             except Exception:
                                 break
-                        time.sleep(0.035)  # ~28 FPS
+                        time.sleep(0.033)  # ~30 FPS
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -171,20 +179,22 @@ class MJPEGStreamServer:
             cls.server = HTTPServer(('0.0.0.0', cls.port), MJPEGHandler)
             cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
             cls.thread.start()
-        except Exception as e:
-            pass  # port may already be in use
+        except Exception:
+            pass  # port may already be active
 
 class ROVStream:
     """
-    Threaded, low-latency video stream handler for ROV and Phone feeds.
+    Threaded, low-latency video stream handler with integrated Real-Time YOLOv8 + ByteTrack (30 FPS).
     """
-    def __init__(self, source: str = "0", width: int = 1280, height: int = 720):
+    def __init__(self, source: str = "0", width: int = 1280, height: int = 720, conf_threshold: float = 0.25, fov_deg: float = 75.0):
         self.source = str(source).strip()
         self.width = width
         self.height = height
-        
         self.cap: Optional[cv2.VideoCapture] = None
         self.current_frame: Optional[np.ndarray] = None
+        self.current_annotated_frame: Optional[np.ndarray] = None
+        self.latest_yolo_detections: List[Dict[str, Any]] = []
+
         self.is_running = False
         self.is_connected = False
         self.lock = threading.Lock()
@@ -192,6 +202,30 @@ class ROVStream:
         self.fps = 0.0
         self.frame_count = 0
         self.last_error = ""
+
+        # Local Real-Time AI Tracking Engine (YOLOv8 + ByteTrack)
+        try:
+            self.yolo_tracker = RealtimeYOLOTracker(conf_threshold=conf_threshold, fov_deg=fov_deg)
+        except Exception as e:
+            print(f"YOLO tracker init error: {e}")
+            self.yolo_tracker = None
+
+        self.enable_realtime_yolo = True
+        self.show_boxes = True
+
+    def set_realtime_yolo(self, enabled: bool):
+        self.enable_realtime_yolo = enabled
+
+    def set_show_boxes(self, show: bool):
+        self.show_boxes = show
+
+    def set_confidence(self, conf: float):
+        if self.yolo_tracker:
+            self.yolo_tracker.set_confidence(conf)
+
+    def set_fov(self, fov: float):
+        if self.yolo_tracker:
+            self.yolo_tracker.set_fov(fov)
 
     def connect(self) -> bool:
         """Attempts connection to USB port or Wi-Fi RTSP/HTTP URL."""
@@ -228,6 +262,7 @@ class ROVStream:
             return False
 
         self.current_frame = test_frame
+        self.current_annotated_frame = test_frame
         self.is_connected = True
         self.is_running = True
         self.last_error = ""
@@ -236,14 +271,14 @@ class ROVStream:
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.thread.start()
         
-        # Register with MJPEG streaming server
+        # Register with MJPEG streaming server (port 8504)
         MJPEGStreamServer.set_stream(self)
         
         time.sleep(0.15)
         return True
 
     def _capture_loop(self):
-        """Continuously reads frames in the background to prevent buffer buildup."""
+        """Continuously reads frames and executes real-time YOLO + ByteTrack tracking."""
         last_time = time.time()
         fps_counter = 0
         
@@ -253,8 +288,20 @@ class ROVStream:
                 time.sleep(0.01)
                 continue
 
+            # Real-time YOLOv8 + ByteTrack Processing
+            annotated = frame
+            dets = []
+            if self.enable_realtime_yolo and self.yolo_tracker is not None:
+                try:
+                    annotated, dets = self.yolo_tracker.process_frame(frame, draw_hud=self.show_boxes)
+                except Exception:
+                    annotated = frame
+                    dets = []
+
             with self.lock:
                 self.current_frame = frame
+                self.current_annotated_frame = annotated
+                self.latest_yolo_detections = dets
                 self.frame_count += 1
                 fps_counter += 1
 
@@ -267,26 +314,37 @@ class ROVStream:
 
             time.sleep(0.002)
 
-    def get_latest_frame_rgb(self) -> Optional[np.ndarray]:
-        """Returns the latest captured frame in RGB format."""
+    def get_latest_frame_rgb(self, use_annotated: bool = True) -> Optional[np.ndarray]:
+        """Returns the latest frame in RGB format."""
         with self.lock:
-            if self.current_frame is None:
+            f = None
+            if use_annotated and self.current_annotated_frame is not None:
+                f = self.current_annotated_frame
+            elif self.current_frame is not None:
+                f = self.current_frame
+            if f is None:
                 if self.cap and self.cap.isOpened():
                     ret, frame = self.cap.read()
                     if ret and frame is not None:
                         self.current_frame = frame
-                if self.current_frame is None:
-                    return None
-            frame = self.current_frame.copy()
+                        f = frame
+            if f is None:
+                return None
+            frame = f.copy()
             
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    def get_latest_frame_pil(self) -> Optional[Image.Image]:
+    def get_latest_frame_pil(self, use_annotated: bool = True) -> Optional[Image.Image]:
         """Returns latest frame as PIL Image."""
-        rgb = self.get_latest_frame_rgb()
+        rgb = self.get_latest_frame_rgb(use_annotated=use_annotated)
         if rgb is None:
             return None
         return Image.fromarray(rgb)
+
+    def get_latest_detections(self) -> List[Dict[str, Any]]:
+        """Returns current list of real-time tracked objects from YOLO + ByteTrack."""
+        with self.lock:
+            return list(self.latest_yolo_detections)
 
     def is_standby(self) -> bool:
         """Returns True if the camera stream is inactive or pure black."""
@@ -311,6 +369,8 @@ class ROVStream:
         self.is_connected = False
         with self.lock:
             self.current_frame = None
+            self.current_annotated_frame = None
+            self.latest_yolo_detections = []
 
     def __del__(self):
         self.stop()

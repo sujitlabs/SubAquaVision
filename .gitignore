@@ -24,3 +24,7 @@ Thumbs.db
 reports/
 output/
 uploads/
+
+# Local camera diagnostics and test captures
+*_test.jpg
+*_debug.jpg

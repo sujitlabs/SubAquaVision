@@ -3,7 +3,7 @@ Configuration settings for Underwater Object Detection & Measurement System.
 """
 
 # App Information
-APP_TITLE = "SubAquaVision"
+APP_TITLE = "SubAquaVisionUltra"
 APP_SUBTITLE = "Underwater Object Detection, ROV Streaming & Measurement System"
 APP_VERSION = "2.5.0"
 

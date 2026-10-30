@@ -325,6 +325,12 @@ if "tracker" not in st.session_state:
     st.session_state.tracker = UnderwaterTracker()
 if "telemetry" not in st.session_state:
     st.session_state.telemetry = ROVTelemetry()
+if "local_yolo" not in st.session_state:
+    try:
+        from local_yolo_detector import RealtimeYOLOTracker
+        st.session_state.local_yolo = RealtimeYOLOTracker(conf_threshold=0.25)
+    except Exception as e:
+        st.session_state.local_yolo = None
 
 # Function to connect ROV
 def connect_camera(source: str):
@@ -358,8 +364,32 @@ with st.sidebar:
     st.caption(f"{APP_SUBTITLE} (v{APP_VERSION})")
     st.divider()
 
+    # AI Engine Configuration
+    st.subheader("⚡ AI Vision Engine")
+    ai_engine_mode = st.radio(
+        "AI Detection Pipeline",
+        [
+            "⚡ Local Real-Time AI (YOLOv8 + ByteTrack - 30 FPS)",
+            "🤖 Cloud Multimodal AI (Google Gemini Flash)"
+        ],
+        index=0,
+        help="Local AI runs on-device at 30 FPS with continuous ByteTrack. Cloud AI runs multimodal taxonomy on captured frames."
+    )
+    is_realtime_local = "Local Real-Time" in ai_engine_mode
+
+    if is_realtime_local:
+        st.success("🟢 **Real-Time 30 FPS Mode Active!** Live video continuously tracks objects with ByteTrack IDs.")
+        yolo_conf = st.slider("Local AI Confidence", min_value=0.10, max_value=0.90, value=0.25, step=0.05)
+        if st.session_state.rov_stream is not None:
+            st.session_state.rov_stream.set_realtime_yolo(True)
+            st.session_state.rov_stream.set_confidence(yolo_conf)
+    else:
+        st.info("☁️ **Cloud Gemini Mode:** Uses Gemini 3.5 Flash for deep biological taxonomy on captured frames.")
+        if st.session_state.rov_stream is not None:
+            st.session_state.rov_stream.set_realtime_yolo(False)
+
     # Gemini API Configuration
-    st.subheader("🤖 Gemini 2.5 Flash API")
+    st.subheader("🤖 Gemini 3.5 Flash API (Optional for Deep Audits)")
     input_api_key = st.text_input(
         "Enter Google Gemini API Key", 
         value=st.session_state.api_key, 
@@ -475,7 +505,7 @@ st.markdown("""
         <div style="display: flex; align-items: center; gap: 12px;">
             <span style="font-size: 2.2rem; filter: drop-shadow(0 0 10px #00E5FF);">🌊</span>
             <div>
-                <h1 class="mission-title">SUBAQUAVISION</h1>
+                <h1 class="mission-title">SUBAQUAVISION ULTRA</h1>
                 <div style="font-size: 0.88rem; color: #94a3b8; font-family: 'Rajdhani', sans-serif; font-weight: 600; letter-spacing: 1.2px;">
                     AUTONOMOUS ROV OPTICAL TELEMETRY & MULTIMODAL METROLOGY SYSTEM
                 </div>
@@ -483,9 +513,9 @@ st.markdown("""
         </div>
     </div>
     <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <span class="hud-chip chip-cyan">⚡ AI ENGINE</span>
-        <span class="hud-chip chip-active">🟢 TELEMETRY: NOMINAL</span>
-        <span class="hud-chip chip-cyan">📡 30 FPS HUD</span>
+        <span class="hud-chip chip-cyan">⚡ AI: REAL-TIME YOLOv8 + BYTETRACK</span>
+        <span class="hud-chip chip-active">🟢 30 FPS LIVE MOT</span>
+        <span class="hud-chip chip-cyan">📡 8504 STREAM</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -626,7 +656,7 @@ with tabs[0]:
                     <div><span class="rec-indicator"></span><b>LIVE OPTICAL SENSOR</b> | CAM-FEED 01</div>
                     <div>SRC: <code>{active_src}</code> | 30 FPS</div>
                 </div>
-                <img src="http://localhost:8502/video_feed" style="width:100%; max-height:460px; object-fit:contain; background:#000;" onerror="this.onerror=null; this.src='{active_src}';">
+                <img src="http://localhost:8504/video_feed" style="width:100%; max-height:460px; object-fit:contain; background:#000;" onerror="this.onerror=null; this.src='{active_src}';">
             </div>
             """, unsafe_allow_html=True)
             
@@ -647,8 +677,25 @@ with tabs[0]:
 
         with col_v2:
             st.subheader("📊 Real-Time AI Detection & Metrology")
+            if is_realtime_local:
+                st.markdown("""
+                <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span style="color: #10b981; font-weight: bold; font-size: 1rem;">🟢 LIVE 30 FPS YOLOv8 + BYTETRACK</span><br>
+                        <span style="color: #a7f3d0; font-size: 0.85rem;">Continuous On-Device Tracking & Metrology</span>
+                    </div>
+                    <span style="background: rgba(16, 185, 129, 0.25); color: #10b981; padding: 4px 10px; border-radius: 6px; font-weight: 800; font-family: monospace;">30 FPS</span>
+                </div>
+                """, unsafe_allow_html=True)
+                live_tracked = stream.get_latest_detections()
+                if live_tracked:
+                    st.markdown(f"#### 🎯 Active Targets in Live View ({len(live_tracked)} tracked):")
+                    render_grouped_target_cards(live_tracked)
+                else:
+                    st.info("🎯 **Live AI Scanning Active:** Point the camera at objects, marine life, or equipment to track them at 30 FPS.")
+
             if capture_btn:
-                latest_frame = stream.get_latest_frame_pil()
+                latest_frame = stream.get_latest_frame_pil(use_annotated=False)
                 if latest_frame is None and stream.cap and stream.cap.isOpened():
                     ret, raw_f = stream.cap.read()
                     if ret and raw_f is not None:
@@ -668,22 +715,38 @@ with tabs[0]:
                     
                     st.session_state.captured_frame = img_to_detect
 
-                    with st.spinner("Gemini Flash analyzing scene & measuring detected objects..."):
-                        result = st.session_state.detector.detect(img_to_detect)
-                        
-                        if enable_tracking:
-                            tracked_objs = st.session_state.tracker.update(result.get("objects", []))
-                            result["objects"] = tracked_objs
+                    if is_realtime_local and st.session_state.local_yolo is not None:
+                        with st.spinner("⚡ Local YOLOv8 analyzing scene at ultra-low latency..."):
+                            arr_rgb = np.array(img_to_detect)
+                            arr_bgr = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2BGR)
+                            _, dets = st.session_state.local_yolo.process_frame(arr_bgr, draw_hud=False)
+                            result = {
+                                "objects": dets,
+                                "scene_analysis": {
+                                    "is_underwater": True,
+                                    "water_clarity": "Nominal Live Stream",
+                                    "habitat_type": "Live Subsea Inspection",
+                                    "biodiversity_score": min(10, len(dets) * 2),
+                                    "pollution_level": "Active Monitoring",
+                                    "is_demo_mode": False
+                                }
+                            }
+                    else:
+                        with st.spinner("🤖 Gemini Flash analyzing scene & measuring detected objects..."):
+                            result = st.session_state.detector.detect(img_to_detect)
+                            if enable_tracking:
+                                tracked_objs = st.session_state.tracker.update(result.get("objects", []))
+                                result["objects"] = tracked_objs
                             
-                        st.session_state.last_detection_result = result
-                        st.session_state.last_analyzed_image = img_to_detect
-                        
-                        st.session_state.mission_history.append({
-                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "source": str(st.session_state.connected_source),
-                            "objects_count": len(result.get("objects", [])),
-                            "details": result
-                        })
+                    st.session_state.last_detection_result = result
+                    st.session_state.last_analyzed_image = img_to_detect
+
+                    st.session_state.mission_history.append({
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "source": str(st.session_state.connected_source),
+                        "objects_count": len(result.get("objects", [])),
+                        "details": result
+                    })
                 else:
                     st.error("Could not capture frame from stream. Make sure camera is actively transmitting.")
 
@@ -900,15 +963,41 @@ with tabs[1]:
             with col_m1:
                 st.subheader("Original vs Enhanced")
                 st.image(processed_img, caption="Underwater Enhanced Image", width='stretch')
-                if st.button("🚀 Run Gemini Flash Detection", type="primary", width='stretch', key="img_detect_btn"):
-                    with st.spinner("Detecting marine objects and calculating measurements..."):
-                        result = st.session_state.detector.detect(processed_img)
-                        if enable_tracking:
-                            result["objects"] = st.session_state.tracker.update(result.get("objects", []))
-                        st.session_state.inspector_result = result
-                        st.session_state.inspector_image = processed_img
-                        st.session_state.last_detection_result = result
-                        st.session_state.last_analyzed_image = processed_img
+                col_ib1, col_ib2 = st.columns(2)
+                with col_ib1:
+                    if st.button("⚡ Run Local YOLOv8", type="primary", width='stretch', key="img_detect_yolo_btn"):
+                        with st.spinner("Executing Local YOLOv8 + ByteTrack..."):
+                            arr_rgb = np.array(processed_img)
+                            arr_bgr = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2BGR)
+                            if st.session_state.local_yolo is not None:
+                                _, dets = st.session_state.local_yolo.process_frame(arr_bgr, draw_hud=False)
+                            else:
+                                dets = []
+                            result = {
+                                "objects": dets,
+                                "scene_analysis": {
+                                    "is_underwater": True,
+                                    "water_clarity": "Local High-Speed Scan",
+                                    "habitat_type": "Inspected Media Scene",
+                                    "biodiversity_score": min(10, len(dets) * 2),
+                                    "pollution_level": "Monitored Target",
+                                    "is_demo_mode": False
+                                }
+                            }
+                            st.session_state.inspector_result = result
+                            st.session_state.inspector_image = processed_img
+                            st.session_state.last_detection_result = result
+                            st.session_state.last_analyzed_image = processed_img
+                with col_ib2:
+                    if st.button("🤖 Run Gemini Flash", width='stretch', key="img_detect_btn"):
+                        with st.spinner("Detecting marine objects with Gemini Flash..."):
+                            result = st.session_state.detector.detect(processed_img)
+                            if enable_tracking:
+                                result["objects"] = st.session_state.tracker.update(result.get("objects", []))
+                            st.session_state.inspector_result = result
+                            st.session_state.inspector_image = processed_img
+                            st.session_state.last_detection_result = result
+                            st.session_state.last_analyzed_image = processed_img
             
             with col_m2:
                 st.subheader("📊 Detections & Bounding Boxes")
